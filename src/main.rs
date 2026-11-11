@@ -52,7 +52,7 @@ fn main() {
     let _ = tracing::subscriber::set_global_default(tracing_subscriber);
 
     let (is_connected_sender, is_connected_receiver) = mpsc::channel::<bool>(1);
-    let (host_to_device_sender, _) = broadcast::channel::<Vec<u8>>(1);
+    let (host_to_device_sender, _) = broadcast::channel::<Vec<u8>>(16);
     let (device_to_host_sender, _) = broadcast::channel::<Vec<u8>>(1);
 
     let args = Args::parse();

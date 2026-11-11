@@ -14,7 +14,7 @@ Application is written in Rust which gives easy access to HID libraries, low-lev
 | ------------ | ------------------ | ------------------------------- | ------------------           |
 | Time         | :heavy_check_mark: | :heavy_check_mark:              | :heavy_check_mark:           |
 | Volume       | :heavy_check_mark: | :heavy_check_mark: (PulseAudio) | :heavy_check_mark:           |
-| Input layout | :heavy_check_mark: | :heavy_check_mark: (X11)        | :heavy_check_mark:           |
+| Input layout | :heavy_check_mark: | :heavy_check_mark: (X11, KDE Wayland) | :heavy_check_mark:           |
 | Media info   | :heavy_check_mark: | :heavy_check_mark: (MPRIS/D-Bus)[^linux-spotify] | :heavy_check_mark: (Spotify) |
 | Relay        | :heavy_check_mark: | :heavy_check_mark:              | :heavy_check_mark:           |
 | Weather      |  | :heavy_check_mark: | :heavy_check_mark: |
@@ -97,6 +97,20 @@ Default configuration is set to [stront](https://github.com/zzeneg/stront). For 
 - `layouts` - list of supported keyboard layouts in two-letter format (app sends layout's index, not name)
 - `reconnectDelay` - delay between reconnecting attempts in milliseconds (optional, default is 5000)
 - `weather` - optional weather provider config for Linux and MacOS. The URL should return a temperature value, for example `wttr.in/Hamburg?format=%t`
+
+On KDE Wayland, layout updates use `org.kde.keyboard` on the session D-Bus.
+The active layout is sent on connection, then updated on KDE layout-change
+notifications. Other Wayland compositors are not supported by this provider.
+X11 sessions continue to use XKB.
+
+Keep each layout as a separate entry, in the same order as the keyboard's
+display labels. For Wafer's `US,RU,DE,UA` labels, use
+`"layouts": ["us", "ru", "de", "ua"]`, even if KDE lists them in a different
+order. KDE layout names are mapped to these indices before sending.
+
+The live KDE regression check briefly cycles the layouts and restores the active
+one: `cargo test kde_layout_reports_match_firmware_order -- --ignored`.
+It expects KDE layouts `us`, `ru`, `de`, and `ua`, in any system order.
 
 #### Minimal config
 

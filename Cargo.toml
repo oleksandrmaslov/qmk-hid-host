@@ -22,6 +22,7 @@ serde_json = "1.0"
 clap = { version = "4.0.0", features = ["derive"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
+dbus = "0.9"
 pulsectl-rs = "0.3.2"
 libpulse-binding = "2.28.1"
 x11 = "2.21.0"

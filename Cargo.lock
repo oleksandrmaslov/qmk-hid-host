@@ -1074,6 +1074,7 @@ dependencies = [
  "core-foundation-sys",
  "coreaudio-rs",
  "coreaudio-sys",
+ "dbus",
  "hidapi",
  "libc",
  "libpulse-binding",
