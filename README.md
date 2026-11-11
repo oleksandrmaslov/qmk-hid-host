@@ -21,6 +21,12 @@ Application is written in Rust which gives easy access to HID libraries, low-lev
 
 MacOS is partially supported, as I don't own any Apple devices, feel free to raise PRs.
 
+On Linux, KDE browser integration replaces Chrome's native tab-title source when
+its metadata identifies the same browser process. Other media sources keep their
+normal playing/paused priority; equal states prefer a source with an artist tag.
+Missing artist tags clear the previous artist, and media workers stop between
+reconnections so an older source cannot keep overwriting the display.
+
 ## Relay mode (device-to-device communication) - experimental
 
 This allows for communication between two or more devices. `qmk-hid-host` only receives information from any device and broadcasts it to all devices. The actual sending and receiving should be configured in devices' firmware, but you have to set first byte in the data array - `0xCC` for sending and `0xCD` for receiving.
