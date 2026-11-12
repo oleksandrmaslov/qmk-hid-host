@@ -8,6 +8,8 @@ use crate::data_type::DataType;
 
 use super::super::_base::Provider;
 
+mod chromecast;
+
 fn find_media_player(finder: &PlayerFinder) -> Result<mpris::Player, mpris::FindingError> {
     let mut players: Vec<_> = finder.iter_players()?.filter_map(Result::ok).collect();
     let browser_pid = players
@@ -47,25 +49,16 @@ fn get_artist(metadata: &Metadata) -> &str {
         .unwrap_or_default()
 }
 
-fn send_media_data(
-    metadata: &Metadata,
-    data_sender: &broadcast::Sender<Vec<u8>>,
-    current: &(String, String),
-    fallback_title: &str,
-) -> (String, String) {
-    let (mut artist, mut title) = current.clone();
-
-    let new_artist = get_artist(metadata).to_string();
-    if artist != new_artist {
-        tracing::info!("new artist: {}", new_artist);
-        artist = new_artist;
+fn send_media_data(metadata: &Metadata, data_sender: &broadcast::Sender<Vec<u8>>, current: Option<&(String, String)>) -> (String, String) {
+    let artist = get_artist(metadata).to_string();
+    if current.map_or(true, |current| current.0 != artist) {
+        tracing::info!("new artist: {}", artist);
         send_media_raw(DataType::MediaArtist, &artist, &data_sender);
     }
 
-    let new_title = get_display_title(metadata, fallback_title);
-    if !new_title.is_empty() && title != new_title {
-        tracing::info!("new title: {}", new_title);
-        title = new_title;
+    let title = get_display_title(metadata);
+    if current.map_or(true, |current| current.1 != title) {
+        tracing::info!("new title: {}", title);
         send_media_raw(DataType::MediaTitle, &title, &data_sender);
         send_media_player_text(&title, &data_sender);
         std::thread::sleep(std::time::Duration::from_millis(50));
@@ -74,7 +67,7 @@ fn send_media_data(
     return (artist, title);
 }
 
-fn get_display_title(metadata: &Metadata, fallback_title: &str) -> String {
+fn get_display_title(metadata: &Metadata) -> String {
     if let Some(title) = metadata.title().map(str::trim).filter(|title| !title.is_empty()) {
         return title.to_string();
     }
@@ -87,13 +80,6 @@ fn get_display_title(metadata: &Metadata, fallback_title: &str) -> String {
         return url.to_string();
     }
 
-    let fallback_title = fallback_title.trim();
-    if !fallback_title.is_empty() {
-        tracing::info!("media metadata has no title or url, using player identity: {}", fallback_title);
-        return fallback_title.to_string();
-    }
-
-    tracing::info!("media metadata has no title, url, or player identity: {:?}", metadata);
     String::default()
 }
 
@@ -175,14 +161,16 @@ pub struct MediaProvider {
     data_sender: broadcast::Sender<Vec<u8>>,
     generation: Arc<AtomicU64>,
     extended: bool,
+    chromecast: Option<String>,
 }
 
 impl MediaProvider {
-    pub fn new(data_sender: broadcast::Sender<Vec<u8>>, extended: bool) -> Box<dyn Provider> {
+    pub fn new(data_sender: broadcast::Sender<Vec<u8>>, extended: bool, chromecast: Option<String>) -> Box<dyn Provider> {
         let provider = MediaProvider {
             data_sender,
             generation: Arc::new(AtomicU64::new(0)),
             extended,
+            chromecast,
         };
         return Box::new(provider);
     }
@@ -195,25 +183,44 @@ impl Provider for MediaProvider {
         let data_sender = self.data_sender.clone();
         let generation = self.generation.clone();
         let extended = self.extended;
+        let chromecast = self.chromecast.clone();
         std::thread::spawn(move || {
-            let mut media_data = (String::default(), String::default());
+            let mut media_data = None;
+            let cast_receiver = chromecast.map(|host| chromecast::start(host, generation.clone(), run_id));
 
             'outer: loop {
                 if generation.load(Relaxed) != run_id {
                     break;
                 }
 
-                if let Ok(Ok(player)) = PlayerFinder::new().map(|x| find_media_player(&x)) {
+                let player = PlayerFinder::new().ok().and_then(|finder| find_media_player(&finder).ok());
+                let local_playing =
+                    player.as_ref().and_then(|player| player.get_playback_status().ok()) == Some(mpris::PlaybackStatus::Playing);
+                if generation.load(Relaxed) != run_id {
+                    break;
+                }
+                if let Some(track) = chromecast::current(cast_receiver.as_ref(), local_playing) {
+                    media_data = Some(send_media_data(&track.metadata, &data_sender, media_data.as_ref()));
+                    if extended {
+                        send_media_extended(
+                            &data_sender,
+                            track.total_time,
+                            track.position,
+                            status_to_byte(track.status),
+                            get_artist(&track.metadata),
+                        );
+                    }
+                } else if let Some(player) = player {
                     let metadata = player.get_metadata().ok();
                     if let Some(ref metadata) = metadata {
                         if generation.load(Relaxed) != run_id {
                             break;
                         }
-                        media_data = send_media_data(metadata, &data_sender, &media_data, player.identity());
+                        media_data = Some(send_media_data(metadata, &data_sender, media_data.as_ref()));
                         if extended {
                             let status = player.get_playback_status().ok().map(status_to_byte).unwrap_or(0);
                             let (total_time, position) = get_time_info(&player, metadata);
-                            send_media_extended(&data_sender, total_time, position, status, &media_data.0);
+                            send_media_extended(&data_sender, total_time, position, status, get_artist(metadata));
                         }
                     }
 
@@ -223,13 +230,21 @@ impl Provider for MediaProvider {
                             if generation.load(Relaxed) != run_id {
                                 break 'outer;
                             }
+                            if chromecast::current(
+                                cast_receiver.as_ref(),
+                                tick.progress.playback_status() == mpris::PlaybackStatus::Playing,
+                            )
+                            .is_some()
+                            {
+                                continue 'outer;
+                            }
                             if tick.progress_changed {
                                 let metadata = tick.progress.metadata();
-                                media_data = send_media_data(metadata, &data_sender, &media_data, player.identity());
+                                media_data = Some(send_media_data(metadata, &data_sender, media_data.as_ref()));
                                 if extended {
                                     let (total_time, position) = get_time_info(&player, metadata);
                                     let status = status_to_byte(tick.progress.playback_status());
-                                    send_media_extended(&data_sender, total_time, position, status, &media_data.0);
+                                    send_media_extended(&data_sender, total_time, position, status, get_artist(metadata));
                                 }
                             }
                             if tick.player_quit || tick.progress.playback_status() != mpris::PlaybackStatus::Playing {
@@ -237,9 +252,14 @@ impl Provider for MediaProvider {
                             }
                         }
                     }
+                } else if media_data.is_some() {
+                    media_data = Some(send_media_data(&Metadata::default(), &data_sender, media_data.as_ref()));
+                    if extended {
+                        send_media_extended(&data_sender, 0, 0, 0, "");
+                    }
                 }
 
-                tracing::info!("waiting for player...");
+                tracing::debug!("checking media sources...");
 
                 for _ in 0..10 {
                     if generation.load(Relaxed) != run_id {
@@ -299,7 +319,7 @@ mod tests {
     fn missing_artist_clears_previous_artist_report() {
         let (sender, mut receiver) = broadcast::channel(16);
         let before = ("Nico".to_string(), "Unfold".to_string());
-        let after = send_media_data(&metadata(&[""], "Unfold"), &sender, &before, "Chrome");
+        let after = send_media_data(&metadata(&[""], "Unfold"), &sender, Some(&before));
         assert_eq!(after, (String::new(), "Unfold".to_string()));
         assert_eq!(receiver.try_recv().unwrap(), vec![DataType::MediaArtist as u8, 0]);
         assert!(receiver.try_recv().is_err());
@@ -309,13 +329,43 @@ mod tests {
     fn artist_update_does_not_require_a_title_change() {
         let (sender, mut receiver) = broadcast::channel(16);
         let before = ("Previous artist".to_string(), "Unfold".to_string());
-        let after = send_media_data(&metadata(&["", " Nico "], "Unfold"), &sender, &before, "Chrome");
+        let after = send_media_data(&metadata(&["", " Nico "], "Unfold"), &sender, Some(&before));
         assert_eq!(after, ("Nico".to_string(), "Unfold".to_string()));
         assert_eq!(
             receiver.try_recv().unwrap(),
             vec![DataType::MediaArtist as u8, 4, b'N', b'i', b'c', b'o']
         );
         assert!(receiver.try_recv().is_err());
+    }
+
+    #[test]
+    fn empty_browser_metadata_does_not_become_a_track_title() {
+        let metadata = Metadata::from(HashMap::from([("mpris:length".into(), MetadataValue::from(0_i64))]));
+        let (sender, mut receiver) = broadcast::channel(16);
+        let empty = (String::new(), String::new());
+        assert_eq!(send_media_data(&metadata, &sender, Some(&empty)), empty);
+        assert!(receiver.try_recv().is_err());
+
+        let before = ("Nico".to_string(), "Unfold".to_string());
+        for current in [Some(&before), None] {
+            assert_eq!(send_media_data(&metadata, &sender, current), empty);
+            assert_eq!(receiver.try_recv().unwrap(), vec![DataType::MediaArtist as u8, 0]);
+            assert_eq!(receiver.try_recv().unwrap(), vec![DataType::MediaTitle as u8, 0]);
+            let mut compact = vec![DataType::MediaPlayerLinux as u8];
+            compact.extend_from_slice(b"        ");
+            assert_eq!(receiver.try_recv().unwrap(), compact);
+            assert!(receiver.try_recv().is_err());
+        }
+    }
+
+    #[test]
+    fn display_title_preserves_titles_and_filename_fallback() {
+        assert_eq!(get_display_title(&metadata(&["Nico"], " Unfold ")), "Unfold");
+        let file = Metadata::from(HashMap::from([(
+            "xesam:url".into(),
+            MetadataValue::from("file:///music/Unfold.flac"),
+        )]));
+        assert_eq!(get_display_title(&file), "Unfold.flac");
     }
 
     #[test]
@@ -367,10 +417,13 @@ mod tests {
     fn media_worker_stops_without_waiting_for_the_next_track() {
         let (sender, mut receiver) = broadcast::channel(16);
         let running = Arc::new(AtomicU64::new(0));
+        let chromecast = std::env::var("QMK_CHROMECAST_HOST").ok();
+        let running_references = if chromecast.is_some() { 4 } else { 3 };
         let provider = MediaProvider {
             data_sender: sender,
             generation: running.clone(),
             extended: false,
+            chromecast,
         };
         provider.start();
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
@@ -381,12 +434,12 @@ mod tests {
         provider.stop();
         provider.start();
         let deadline = std::time::Instant::now() + std::time::Duration::from_millis(500);
-        while Arc::strong_count(&running) > 3 && std::time::Instant::now() < deadline {
+        while Arc::strong_count(&running) > running_references && std::time::Instant::now() < deadline {
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
         assert_eq!(
             Arc::strong_count(&running),
-            3,
+            running_references,
             "previous media worker survived an immediate restart"
         );
         provider.stop();

@@ -15,7 +15,7 @@ Application is written in Rust which gives easy access to HID libraries, low-lev
 | Time         | :heavy_check_mark: | :heavy_check_mark:              | :heavy_check_mark:           |
 | Volume       | :heavy_check_mark: | :heavy_check_mark: (PulseAudio) | :heavy_check_mark:           |
 | Input layout | :heavy_check_mark: | :heavy_check_mark: (X11, KDE Wayland) | :heavy_check_mark:           |
-| Media info   | :heavy_check_mark: | :heavy_check_mark: (MPRIS/D-Bus)[^linux-spotify] | :heavy_check_mark: (Spotify) |
+| Media info   | :heavy_check_mark: | :heavy_check_mark: (MPRIS/D-Bus, Chromecast)[^linux-spotify] | :heavy_check_mark: (Spotify) |
 | Relay        | :heavy_check_mark: | :heavy_check_mark:              | :heavy_check_mark:           |
 | Weather      |  | :heavy_check_mark: | :heavy_check_mark: |
 
@@ -26,6 +26,10 @@ its metadata identifies the same browser process. Other media sources keep their
 normal playing/paused priority; equal states prefer a source with an artist tag.
 Missing artist tags clear the previous artist, and media workers stop between
 reconnections so an older source cannot keep overwriting the display.
+Missing titles clear the previous title and compact display; a browser name such
+as "Chrome" is never used as a track title. These fields also synchronize on
+connection when empty. An optional Chromecast source reads track details directly
+from the receiver, including when the browser stops publishing MPRIS metadata.
 
 ## Relay mode (device-to-device communication) - experimental
 
@@ -103,6 +107,25 @@ Default configuration is set to [stront](https://github.com/zzeneg/stront). For 
 - `layouts` - list of supported keyboard layouts in two-letter format (app sends layout's index, not name)
 - `reconnectDelay` - delay between reconnecting attempts in milliseconds (optional, default is 5000)
 - `weather` - optional weather provider config for Linux and MacOS. The URL should return a temperature value, for example `wttr.in/Hamburg?format=%t`
+- `chromecast` - optional Linux Cast receiver hostname or IP, for example `"chromecast": "living-room.local"`.
+
+Use a stable `.local` hostname or a reserved IP for your Cast receiver on the same
+network. The host reads its music track or generic media title on TCP port 8009
+once per second. Playing or buffering Cast media takes priority; paused Cast
+media yields to a playing local app. Idle, unreachable, or unnamed Cast media
+falls back to MPRIS. It observes an existing session without changing playback,
+and needs no keyboard firmware change. Omit `chromecast` to disable it.
+Cast devices use self-signed TLS certificates, so configure a receiver on a
+trusted local network.
+The receiver can be playing a session started by another phone or computer;
+the host only needs network access to the configured receiver.
+The Cast reader is independent of the Linux distro and desktop environment.
+For `.local` hostnames, the system resolver must support mDNS. On Arch-based
+systems, follow the [Avahi hostname resolution setup](https://wiki.archlinux.org/title/Avahi#Hostname_resolution)
+(`avahi`, `nss-mdns`, the service, and NSS configuration), or configure a reserved
+IP instead. Check hostname resolution with `getent hosts living-room.local`.
+The read-only hardware check requires an active track:
+`QMK_CHROMECAST_HOST=living-room.local cargo test live_chromecast_reports_track_and_stops_monitor -- --ignored --nocapture`.
 
 On KDE Wayland, layout updates use `org.kde.keyboard` on the session D-Bus.
 The active layout is sent on connection, then updated on KDE layout-change
@@ -168,9 +191,9 @@ When you verified that the application works with your keyboard, you can use `qm
    sudo pacman -S curl
    ```
 
-   Linux media info uses D-Bus/MPRIS, so the active player must expose MPRIS metadata. Spotify works out of the box. Other players, like mpv, depend on how they publish metadata.
+   Local Linux media info uses D-Bus/MPRIS, so the active player must expose MPRIS metadata. Spotify works out of the box. Other players, like mpv, depend on how they publish metadata. The optional `chromecast` source reads metadata directly from a Cast receiver.
 
-   The Linux media provider sends `_MEDIA_ARTIST` (0xAD), `_MEDIA_TITLE` (0xAE), and `_MEDIA_PLAYER_LINUX` (0xB0, 8 bytes space-padded compact text) on title changes. When `"extended_media": true` is set in config, it also sends `_MEDIA_EXTENDED` (0xB1) on play/pause/track-change events, containing: 2-byte total time (seconds, u16 LE), 2-byte current position (seconds, u16 LE), 1-byte playback status (0=stopped, 1=playing, 2=paused), 1-byte artist name length, and the artist name (up to 21 bytes).
+   The Linux media provider sends `_MEDIA_ARTIST` (0xAD) on artist changes, and `_MEDIA_TITLE` (0xAE) and `_MEDIA_PLAYER_LINUX` (0xB0, 8 bytes space-padded compact text) on title changes. When `"extendedMedia": true` is set in config, it also sends `_MEDIA_EXTENDED` (0xB1) on local play/pause/track-change events and once per second for Cast media, containing: 2-byte total time (seconds, u16 LE), 2-byte current position (seconds, u16 LE), 1-byte playback status (0=stopped, 1=playing, 2=paused), 1-byte artist name length, and the artist name (up to 21 bytes).
 
    Weather uses `curl` and the configured `weather.url`; the default expects a wttr.in response like `+29°C`.
 
@@ -216,6 +239,20 @@ When you verified that the application works with your keyboard, you can use `qm
 1. `nix develop`
 
 ### Native
+
+On Arch-based systems, install the build dependencies:
+
+```sh
+sudo pacman -S --needed base-devel rust dbus libx11 libpulse systemd-libs
+```
+
+If Rust is managed through rustup, use its current stable toolchain instead of
+installing the `rust` package. The existing `install-build-deps.sh` uses APT for
+Debian/Ubuntu; other distros need their equivalent development packages for
+libudev, D-Bus, X11, and libpulse. The Cast client is built into the executable
+and does not require a separate Cast utility or OpenSSL installation. For an
+older distro or different CPU architecture, build locally with its toolchain
+and libraries instead of copying an incompatible release binary.
 
 1. Install Rust
 2. Run `cargo run`

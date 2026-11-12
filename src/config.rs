@@ -17,6 +17,8 @@ pub struct Config {
     pub weather: Option<WeatherConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub extended_media: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub chromecast: Option<String>,
 }
 
 #[derive(serde::Deserialize, serde::Serialize)]
@@ -56,6 +58,7 @@ pub fn load_config(path: PathBuf) -> &'static Config {
             url: "wttr.in/Hamburg?format=%t".to_string(),
         }),
         extended_media: None,
+        chromecast: None,
     };
 
     if let Ok(file) = std::fs::read_to_string(&path) {

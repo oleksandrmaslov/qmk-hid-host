@@ -92,7 +92,11 @@ fn get_providers(
     device_to_host_sender: &broadcast::Sender<Vec<u8>>,
 ) -> Vec<Box<dyn Provider>> {
     #[cfg(target_os = "linux")]
-    let media_provider = MediaProvider::new(host_to_device_sender.clone(), config::get_config().extended_media.unwrap_or(false));
+    let media_provider = MediaProvider::new(
+        host_to_device_sender.clone(),
+        config::get_config().extended_media.unwrap_or(false),
+        config::get_config().chromecast.clone(),
+    );
     #[cfg(target_os = "macos")]
     let media_provider = MediaProvider::new(host_to_device_sender.clone());
 
